@@ -1,0 +1,6 @@
+int prevButtonPressed = 0;
+int canMove = 0;
+int gameoverFlag = 0;
+ENEMY objs[ENEMYCOUNT];
+ENEMY oldobjs[ENEMYCOUNT];
+ENEMY *cur;

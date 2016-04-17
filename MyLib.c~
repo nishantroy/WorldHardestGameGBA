@@ -1,0 +1,360 @@
+#include "MyLib.h"
+#include "title.h"
+#include "tardis.h"
+#include "end.h"
+#include "stdio.h"
+
+extern const unsigned char fontdata_6x8[12288];
+unsigned short *videoBuffer = (unsigned short *)0x6000000;
+
+//Draw an image with DMA at given coordinates (r,c) of given width and height
+void drawImage3(int r, int c, int width, int height, const unsigned short* image)
+{
+	for (int a = 0; a < height; a++) {
+		DMA[3].src = (unsigned short*)(image + a*width);
+		DMA[3].dst = videoBuffer + a*WIDTH + (r*WIDTH + c);
+		DMA[3].cnt = DMA_ON | DMA_SOURCE_INCREMENT | DMA_DESTINATION_INCREMENT | (width);	
+	}
+}
+
+//Draw entire screen before changing variables
+void waitForVblank()
+{
+	while(SCANLINECOUNTER > 160);
+	while(SCANLINECOUNTER < 160);
+}
+
+
+//Paint the screen a given color with DMA
+void fillScreen(volatile u16 color)
+{
+	DMA[3].src = &color;
+	DMA[3].dst = videoBuffer;
+	DMA[3].cnt = 38400 | DMA_ON | DMA_SOURCE_FIXED;
+}
+
+//Set a pixel in videobuffer at given coordinates (r,c) to the given color
+void setPixel(int r, int c, unsigned short color)
+{
+	videoBuffer[OFFSET(r, c, 240)] = color;
+}
+
+//Draw a given character at the given coordinates (r,c) in the given color
+void drawChar(int row, int col, char ch, u16 color)
+{
+	for(int r=0; r<8; r++)
+	{
+		for(int c=0; c<6; c++)
+		{
+			if(fontdata_6x8[OFFSET(r, c, 6) + ch*48])
+			{
+				setPixel(row+r, col+c, color);
+			}
+		}
+	}
+}
+
+//Draw a given string at the given coordinates (row, col) in the given color
+void drawString3(int row, int col, char *str, u16 color)
+{
+	while(*str)
+	{
+		drawChar(row, col, *str++, color);
+		col += 6;
+	}
+}
+
+//Draw a rectangle starting at the given coordinates (row, col) with given dimensions in the given color
+void drawRect(int row, int col, int height, int width, volatile u16 color)
+{
+	for(int r=0; r<height; r++)
+	{
+
+		DMA[3].src = &color;
+		DMA[3].dst = &videoBuffer[OFFSET(row+r, col, 240)];
+		DMA[3].cnt = width | DMA_ON | DMA_SOURCE_FIXED;
+	}
+}
+
+/*
+	Setup the start screen:
+		- Draw the title image
+		- Draw 'Start to begin' screen
+		- Setup player object and enemies coordinats
+
+*/
+
+void setupStart(ENEMY objs[], ENEMY oldobjs[], int gameoverFlag) {
+	gameoverFlag = 0;
+	drawImage3(0, 0, TITLE_WIDTH, TITLE_HEIGHT, title);
+	drawString3(10, 20, "Press START to begin", BLUE);
+
+			objs[0].row = 80;
+			objs[0].col = 4;
+			objs[0].rnext = 2;
+			objs[0].cnext = 2;
+			oldobjs[0] = objs[0];
+			gameoverFlag = 0;
+	
+		for(int i=1; i<ENEMYCOUNT; i++)
+		{
+			objs[i].row = 80;
+			objs[i].col = 20 + (i * 20);
+			objs[i].rnext = 5;
+			objs[i].cnext = 2;
+			oldobjs[i] = objs[i];
+		}
+}
+
+
+/*
+	Setup instructions screen:
+		- Make the screen white
+		- Draw the instruction strings out
+
+*/
+void setupInstructions() {
+	fillScreen(WHITE);
+	drawString3(10, 20, "Move the blue square to the TARDIS!", BLUE);
+
+	drawString3(40, 20, "Press START to proceed", BLUE);
+
+	drawString3(70, 20, "Hit SELECT anytime to restart", BLUE);
+}
+
+/*
+	Setup gameplay:
+		- Draw TARDIS image
+		- Setup string to show how far player reached
+		- Move enemies coordinates for next location
+*/
+
+void setupGame(ENEMY objs[], ENEMY* cur, char str[]) {
+	drawImage3(60, 210, TARDIS_WIDTH, TARDIS_HEIGHT, tardis);
+	sprintf(str, "Col reached: %d / 240", objs[0].col + 12);
+
+	for(int i=1; i<ENEMYCOUNT; i = i + 2)
+		{
+			cur = objs + i;
+
+
+			cur->row += cur->rnext + 3;
+			
+			if(cur->row<0)
+			{
+				cur->row = 0;
+				cur->rnext = - cur->rnext;
+			}
+			if(cur->row > 159-15+1)
+			{
+				cur->row = 159-15+1;
+				cur->rnext = -cur->rnext;
+			}
+			
+		}
+
+			for(int i=2; i<ENEMYCOUNT; i = i + 2)
+		{
+			cur = objs + i;
+
+
+			cur->row -= cur->rnext;
+			
+			if(cur->row<0)
+			{
+				cur->row = 0;
+				cur->rnext =  - cur->rnext;
+			}
+			if(cur->row > 159-15+1)
+			{
+				cur->row = 159-15+1;
+				cur->rnext = - cur->rnext;
+			}
+			
+		}
+}
+
+
+//Draw image for end screen
+void setupEnd() {
+	drawImage3(0, 0, END_WIDTH, END_HEIGHT, End);
+}
+
+
+//Draw strings to show player lost game and how far player got
+void setupLose(char str[]) {
+	drawString3(10, 20, "Good try!", RED);
+	drawString3(40, 20, str, RED);
+}
+
+//Draw strings to show player won game and how far player got
+void setupWin(char str[]) {
+	drawString3(10, 20, "You won!", RED);
+	sprintf(str, "Col reached: %d / 240", 240);
+	drawString3(40, 20, str, RED);
+}
+
+/*
+	Get which button the player pressed:
+		- if he pressed START, return 1
+		- if he pressed A, return 2
+		- if he pressed RIGHT, return 3
+		- if he pressed LEFT, return 4
+		- if he pressed UP, return 5
+		- if he pressed DOWN, return 6
+		- if he pressed SELECT, return 7
+		- otherwise, return 0
+*/
+int getButtonPressed() {
+	if (KEY_DOWN_NOW(BUTTON_START)) {
+			return 1;
+		} else if (KEY_DOWN_NOW(BUTTON_A)) {
+			return 2;
+		} else if (KEY_DOWN_NOW(BUTTON_RIGHT)) {
+			return 3;
+		} else if (KEY_DOWN_NOW(BUTTON_LEFT)) {
+			return 4;
+		} else if (KEY_DOWN_NOW(BUTTON_UP)) {
+			return 5;
+		} else if (KEY_DOWN_NOW(BUTTON_DOWN)) {
+			return 6;
+		} else if (KEY_DOWN_NOW(BUTTON_SELECT)) {
+			return 7;
+		} else {
+			return 0;
+		}
+	}
+
+/*
+	Draw all game objects:
+		- Draw string indicating level
+		- Draw string showing endzone
+		- Draw all enemies
+		- Draw player
+*/
+void drawObjects(ENEMY objs[], ENEMY* cur, ENEMY oldobjs[]) 
+{
+	drawString3(10, 20, "LEVEL ONE", RED);
+	drawString3(50, 180, "ENDZONE", GREEN);
+	drawRect(objs[0].row, objs[0].col, 12, 12, BLUE);
+		for(int i=1; i<ENEMYCOUNT; i++)
+		{
+			drawRect(oldobjs[i].row, oldobjs[i].col, 15, 15, WHITE);
+		}
+		for(int i=1; i<ENEMYCOUNT; i++)
+		{
+			cur = objs+i;
+			drawRect(cur->row, cur->col, 15, 15, GREY);
+			oldobjs[i] = objs[i];
+		}
+}
+
+/*
+	Move Objects based on user pressing buttons
+		- Move player up/down/left/right
+*/
+void moveObjects(int prevButtonPressed, ENEMY* cur, ENEMY objs[], ENEMY oldobjs[]) {
+		if (prevButtonPressed == 3) {
+			moveRight(cur, objs, oldobjs);
+		}
+
+		if (prevButtonPressed == 4) {
+			moveLeft(cur, objs, oldobjs);
+		}
+
+		if (prevButtonPressed == 5) {
+			moveUp(cur, objs, oldobjs);
+		}
+
+		if (prevButtonPressed == 6) {
+			moveDown(cur, objs, oldobjs);
+		}
+}
+
+//Move player right when right arrow button pressed
+void moveRight(ENEMY* cur, ENEMY objs[], ENEMY oldobjs[]) {
+	cur = objs;
+			cur->col += cur->cnext;
+			if (cur->col < 0) {
+				cur->col = 0;
+			}
+			if (cur->col > 240 - 12) {
+				cur->col = 240 - 12;
+			}
+			
+			drawRect(oldobjs[0].row, oldobjs[0].col, 12, 12, WHITE);
+			drawRect(oldobjs[0].row, cur->col , 12, 12, BLUE);
+			oldobjs[0] = objs[0];
+}
+
+//Move player left when left arrow button pressed
+void moveLeft(ENEMY* cur, ENEMY objs[], ENEMY oldobjs[]) {
+			cur = objs;
+			cur->col -= cur->cnext;
+			if (cur->col < 0) {
+				cur->col = 0;
+			}
+			if (cur->col > 240 - 12) {
+				cur->col = 240 - 12;
+			}
+			
+			drawRect(oldobjs[0].row, oldobjs[0].col, 12, 12, WHITE);
+			drawRect(oldobjs[0].row, cur->col , 12, 12, BLUE);
+			oldobjs[0] = objs[0];
+}
+
+
+//Move player up when up arrow button pressed
+void moveUp(ENEMY* cur, ENEMY objs[], ENEMY oldobjs[]) {
+			cur = objs;
+			cur->row -= cur->rnext;
+			if (cur->row < 0) {
+				cur->row = 0;
+			}
+			if (cur->row > 160 - 12) {
+				cur->row = 160 - 12;
+			}
+
+			drawRect(oldobjs[0].row, oldobjs[0].col, 12, 12, WHITE);
+			drawRect(cur->row, oldobjs[0].col , 12, 12, BLUE);
+			oldobjs[0] = objs[0];
+}
+
+//Move player down when down arrow button pressed
+void moveDown(ENEMY* cur, ENEMY objs[], ENEMY oldobjs[]) {
+			cur = objs;
+			cur->row += cur->rnext;
+			if (cur->row < 0) {
+				cur->col = 0;
+			}
+			if (cur->row > 160 - 12) {
+				cur->row = 160 - 12;
+			}
+			
+			drawRect(oldobjs[0].row, oldobjs[0].col, 12, 12, WHITE);
+			drawRect(cur->row, oldobjs[0].col , 12, 12, BLUE);
+			oldobjs[0] = objs[0];
+}
+
+/*
+	Check if player collided with an object:
+		- Return 1 for collision with enemy
+		- Return 2 for collision with endzone
+		- Otherwise, return 0
+*/
+int checkCollision(ENEMY objs[]) {
+
+	for (int i = 1; i < ENEMYCOUNT; i++) {
+			if (!(objs[0].col > objs[i].col + 15 || objs[0].col + 12 < objs[i].col || objs[0].row > 15 + objs[i].row || objs[0].row + 12 < objs[i].row)) {
+				return 1;
+			}
+
+		}
+
+		if (!(objs[0].col > 210 + TARDIS_WIDTH || objs[0].col + 12 < 210 || objs[0].row > TARDIS_HEIGHT + 60 || objs[0].row + 12 < 60)) {
+			return 2;
+		}
+
+	return 0;
+
+}
